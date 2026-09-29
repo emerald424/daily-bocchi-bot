@@ -1,6 +1,6 @@
- import requests
-  import os
-  import random
+import requests
+import os
+import random
 
   # 1. 从 GitHub Secrets 获取配置
   PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN")
@@ -9,7 +9,6 @@
       """
       去 Safebooru 抓取一张后藤一里的图片
       """
-      # Safebooru 的 API 地址，tags=gotou_hitori 表示只搜波奇酱
       url = "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&tags=gotou_hitori&limit=100"
 
       try:
@@ -17,15 +16,12 @@
           if response.status_code == 200:
               data = response.json()
               if data:
-                  # 随机选一张
                   image_data = random.choice(data)
-                  # 拼凑图片 URL (Safebooru 的目录结构)
                   image_url = f"https://safebooru.org/images/{image_data['directory']}/{image_data['image']}"
                   return image_url
       except Exception as e:
           print(f"找图失败: {e}")
 
-      # 如果失败了，返回一张保底图
       return "https://media1.tenor.com/m/oxsD2MwZD8IAAAAd/bocchi-the-rock-hitori-gotou.gif"
 
   def send_to_pushplus(image_url):
