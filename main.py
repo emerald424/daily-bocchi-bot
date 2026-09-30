@@ -1,15 +1,22 @@
 import requests
 import os
 import random
+from datetime import datetime, timezone, timedelta
 
-# 1. 从 GitHub Secrets 获取配置
+# 从 GitHub Secrets 获取配置
 PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN")
 
-HISTORY_FILE = "sent.txt"
+HISTORY_FILE = "sent.txt"        # 已发图片去重（发过不再发）
+WINDOW_FILE = "sent_windows.txt"  # 已发时段去重（防止延迟重跑重复推）
+
+SEND_HOURS = (10, 14, 22)  # 北京时间推送时段
+
+
+def beijing_now():
+    return datetime.now(timezone.utc) + timedelta(hours=8)
 
 
 def load_sent():
-    """读取已经发送过的图片记录（去重用）"""
     try:
         with open(HISTORY_FILE, "r") as f:
             return set(line.strip() for line in f if line.strip())
@@ -17,20 +24,21 @@ def load_sent():
         return set()
 
 
-def get_random_bocchi_image(sent):
-    """
-    去 Safebooru 抓取一张后藤一里的图片，跳过已经发过的
-    返回 (图片URL, 图片唯一标识)；失败时返回 (保底图URL, None)
-    """
-    # tags=gotou_hitori 表示只搜波奇酱，limit 加大随机池以降低重复概率
-    url = "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&tags=gotou_hitori&limit=1000"
-
+def load_windows():
     try:
-        response = requests.get(url)
+        with open(WINDOW_FILE, "r") as f:
+            return set(line.strip() for line in f if line.strip())
+    except FileNotFoundError:
+        return set()
+
+
+def get_random_bocchi_image(sent):
+    url = "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&tags=gotou_hitori&limit=1000"
+    try:
+        response = requests.get(url, timeout=30)
         if response.status_code == 200:
             data = response.json()
             if data:
-                # 过滤掉已经发送过的图片
                 fresh = [d for d in data if d.get("image") not in sent]
                 pool = fresh if fresh else data
                 image_data = random.choice(pool)
@@ -39,12 +47,10 @@ def get_random_bocchi_image(sent):
     except Exception as e:
         print(f"找图失败: {e}")
 
-    # 失败时返回一张保底图（不参与去重记录）
     return "https://media1.tenor.com/m/oxsD2MwZD8IAAAAd/bocchi-the-rock-hitori-gotou.gif", None
 
 
 def send_to_pushplus(image_url):
-    """通过 PushPlus 把图片推送到微信，返回是否成功"""
     send_url = "https://www.pushplus.plus/send"
     content = f"🎸 波奇酱来啦~\n\n![波奇酱]({image_url})"
     payload = {
@@ -53,12 +59,16 @@ def send_to_pushplus(image_url):
         "content": content,
         "template": "markdown",
     }
-
     try:
-        res = requests.post(send_url, json=payload)
-        print(f"发送状态: {res.status_code}")
+        res = requests.post(send_url, json=payload, timeout=30)
+        print(f"HTTP 状态: {res.status_code}")
         print(res.text)
-        return res.status_code == 200
+        if res.status_code == 200:
+            body = res.json()
+            if body.get("code") == 200:
+                return True
+            print(f"PushPlus 返回错误 code={body.get('code')}: {body.get('msg')}")
+        return False
     except Exception as e:
         print(f"发送失败: {e}")
         return False
@@ -66,8 +76,20 @@ def send_to_pushplus(image_url):
 
 if __name__ == "__main__":
     if not PUSHPLUS_TOKEN:
-        print("错误：未检测到 PUSHPLUS_TOKEN 配置，请在 GitHub 设置中添加。")
+        print("错误：未检测到 PUSHPLUS_TOKEN 配置，请在 GitHub Secrets 中添加。")
         raise SystemExit(1)
+
+    now = beijing_now()
+    hour = now.hour
+
+    if hour not in SEND_HOURS:
+        print(f"当前北京时间 {now.strftime('%H:%M')}，不在推送时段，跳过。")
+        raise SystemExit(0)
+
+    window_key = now.strftime("%Y-%m-%d-%H")
+    if window_key in load_windows():
+        print(f"时段 {window_key} 已推送过，跳过。")
+        raise SystemExit(0)
 
     print("正在寻找波奇酱...")
     sent = load_sent()
@@ -76,8 +98,14 @@ if __name__ == "__main__":
 
     ok = send_to_pushplus(pic)
 
-    # 只有「真实抓到的图」且「发送成功」才记录，避免漏发或重复发保底图
-    if ok and image_key:
-        with open(HISTORY_FILE, "a") as f:
-            f.write(image_key + "\n")
-        print(f"已记录去重: {image_key}")
+    if ok:
+        with open(WINDOW_FILE, "a") as f:
+            f.write(window_key + "\n")
+        print(f"已记录时段去重: {window_key}")
+        if image_key:
+            with open(HISTORY_FILE, "a") as f:
+                f.write(image_key + "\n")
+            print(f"已记录图片去重: {image_key}")
+    else:
+        print("推送失败，本次不记录去重，下次会重试。")
+        raise SystemExit(1)
