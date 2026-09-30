@@ -1,19 +1,20 @@
-  name: 波奇酱每日推送
+name: 波奇酱每日推送
 
-  on:
-    schedule:
-      - cron: '0 2,6,14 * * *'
-    workflow_dispatch:
+on:
+  schedule:
+    # 每小时跑一次（UTC），脚本内只在 10/14/22 点（北京时间）真正发送
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
-  permissions:
-    contents: write
+permissions:
+  contents: write
 
-  jobs:
-    send-bocchi:
-      runs-on: ubuntu-latest
-      steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v2
+jobs:
+  send-bocchi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.9'
       - run: pip install -r requirements.txt
@@ -25,8 +26,10 @@
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          if [ -f sent.txt ]; then
-            git add sent.txt
-            git diff --cached --quiet || git commit -m "记录已发送图片"
+          git add sent.txt sent_windows.txt 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "无变化，跳过提交"
+          else
+            git commit -m "更新已发送记录"
             git push
           fi
