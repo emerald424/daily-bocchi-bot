@@ -15,6 +15,14 @@ SEND_HOURS = (10, 14, 22)  # 北京时间推送时段
 def beijing_now():
     return datetime.now(timezone.utc) + timedelta(hours=8)
 
+def resolve_send_hour(now):
+    """把执行时刻归入最近的推送时段，容忍 GitHub 调度延迟最多约 2 小时。
+    返回所属时段小时（10/14/22），不在任何时段则返回 None。"""
+    for h in SEND_HOURS:
+        if h <= now.hour < h + 2:
+            return h
+    return None
+
 
 def load_sent():
     try:
@@ -80,13 +88,13 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     now = beijing_now()
-    hour = now.hour
+    send_hour = resolve_send_hour(now)
 
-    if hour not in SEND_HOURS:
+    if send_hour is None:
         print(f"当前北京时间 {now.strftime('%H:%M')}，不在推送时段，跳过。")
         raise SystemExit(0)
 
-    window_key = now.strftime("%Y-%m-%d-%H")
+    window_key = now.strftime("%Y-%m-%d") + f"-{send_hour}"
     if window_key in load_windows():
         print(f"时段 {window_key} 已推送过，跳过。")
         raise SystemExit(0)
