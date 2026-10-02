@@ -2,8 +2,8 @@ name: 波奇酱每日推送
 
 on:
   schedule:
-    # 每小时 :05 跑一次，由 main.py 的 resolve_send_hour 判断是否在 10/14/22 点真正推送
-    - cron: '5 * * * *'
+    # 每小时的 :05 和 :35 各跑一次，由 main.py 判断当天是否有待补发的推送
+    - cron: '5,35 * * * *'
   workflow_dispatch:
 
 permissions:
