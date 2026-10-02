@@ -15,14 +15,6 @@ SEND_HOURS = (10, 14, 22)  # 北京时间推送时段
 def beijing_now():
     return datetime.now(timezone.utc) + timedelta(hours=8)
 
-def resolve_send_hour(now):
-    """把执行时刻归入最近的推送时段，容忍 GitHub 调度延迟最多约 2 小时。
-    返回所属时段小时（10/14/22），不在任何时段则返回 None。"""
-    for h in SEND_HOURS:
-        if h <= now.hour < h + 2:
-            return h
-    return None
-
 
 def load_sent():
     try:
@@ -58,12 +50,12 @@ def get_random_bocchi_image(sent):
     return "https://media1.tenor.com/m/oxsD2MwZD8IAAAAd/bocchi-the-rock-hitori-gotou.gif", None
 
 
-def send_to_pushplus(image_url):
+def send_to_pushplus(image_url, title="🎸 每日波奇酱"):
     send_url = "https://www.pushplus.plus/send"
     content = f"🎸 波奇酱来啦~\n\n![波奇酱]({image_url})"
     payload = {
         "token": PUSHPLUS_TOKEN,
-        "title": "🎸 每日波奇酱",
+        "title": title,
         "content": content,
         "template": "markdown",
     }
@@ -88,32 +80,34 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     now = beijing_now()
-    send_hour = resolve_send_hour(now)
+    today = now.strftime("%Y-%m-%d")
+    sent_windows = load_windows()
 
-    if send_hour is None:
-        print(f"当前北京时间 {now.strftime('%H:%M')}，不在推送时段，跳过。")
+    # 当天还没发过、且已经过了该时段的推送，按 10→14→22 顺序补发
+    pending = [h for h in SEND_HOURS if now.hour >= h and f"{today}-{h}" not in sent_windows]
+
+    if not pending:
+        print(f"当前北京时间 {now.strftime('%H:%M')}，今天没有待补发的推送，跳过。")
         raise SystemExit(0)
 
-    window_key = now.strftime("%Y-%m-%d") + f"-{send_hour}"
-    if window_key in load_windows():
-        print(f"时段 {window_key} 已推送过，跳过。")
-        raise SystemExit(0)
-
-    print("正在寻找波奇酱...")
     sent = load_sent()
-    pic, image_key = get_random_bocchi_image(sent)
-    print(f"找到图片: {pic}")
+    for h in pending:
+        window_key = f"{today}-{h}"
+        print(f"正在补发 {h} 点的波奇酱...")
+        pic, image_key = get_random_bocchi_image(sent)
+        print(f"找到图片: {pic}")
 
-    ok = send_to_pushplus(pic)
+        ok = send_to_pushplus(pic, title=f"🎸 每日波奇酱（{h}点）")
 
-    if ok:
-        with open(WINDOW_FILE, "a") as f:
-            f.write(window_key + "\n")
-        print(f"已记录时段去重: {window_key}")
-        if image_key:
-            with open(HISTORY_FILE, "a") as f:
-                f.write(image_key + "\n")
-            print(f"已记录图片去重: {image_key}")
-    else:
-        print("推送失败，本次不记录去重，下次会重试。")
-        raise SystemExit(1)
+        if ok:
+            with open(WINDOW_FILE, "a") as f:
+                f.write(window_key + "\n")
+            print(f"已记录时段去重: {window_key}")
+            if image_key:
+                sent.add(image_key)
+                with open(HISTORY_FILE, "a") as f:
+                    f.write(image_key + "\n")
+                print(f"已记录图片去重: {image_key}")
+        else:
+            print(f"{h} 点推送失败，本次不记录去重，下次会重试。")
+            raise SystemExit(1)
