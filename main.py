@@ -1,6 +1,7 @@
 import requests
 import os
 import random
+import time
 from datetime import datetime, timezone, timedelta
 
 # 从 GitHub Secrets 获取配置
@@ -38,21 +39,29 @@ def load_windows():
 
 
 def get_random_bocchi_image(sent):
-    url = "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&tags=gotou_hitori&limit=1000"
-    try:
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            if data:
-                fresh = [d for d in data if d.get("image") not in sent]
-                pool = fresh if fresh else data
-                image_data = random.choice(pool)
-                image_url = f"https://safebooru.org/images/{image_data['directory']}/{image_data['image']}"
-                return image_url, image_data["image"]
-    except Exception as e:
-        print(f"找图失败: {e}")
-
-    return "https://media1.tenor.com/m/oxsD2MwZD8IAAAAd/bocchi-the-rock-hitori-gotou.gif", None
+    # Safebooru 偶发 503/限流，重试 3 次、随机翻页换一批图
+    base = "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&tags=gotou_hitori&limit=1000"
+    for attempt in range(3):
+        try:
+            url = f"{base}&pid={random.randint(0, 5)}"
+            response = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+            print(f"Safebooru 第 {attempt + 1} 次请求，HTTP {response.status_code}")
+            if response.status_code == 200:
+                data = response.json()
+                if data:
+                    fresh = [d for d in data if d.get("image") not in sent]
+                    pool = fresh if fresh else data
+                    image_data = random.choice(pool)
+                    image_url = f"https://safebooru.org/images/{image_data['directory']}/{image_data['image']}"
+                    return image_url, image_data["image"]
+                print("Safebooru 返回空数据")
+            else:
+                print(f"Safebooru 返回非 200：{response.text[:100]}")
+        except Exception as e:
+            print(f"找图失败: {e}")
+        time.sleep(5)
+    # 三次都失败：返回 None，由调用方跳过本次，靠下次 run 补发
+    return None, None
 
 
 def download_and_store(image_url):
@@ -141,6 +150,9 @@ if __name__ == "__main__":
         window_key = f"{today}-{h}"
         print(f"正在补发 {h} 点的波奇酱...")
         pic, image_key = get_random_bocchi_image(sent)
+        if pic is None:
+            print(f"{h} 点 Safebooru 拉图失败，本次跳过，稍后由下次 run 重试（不记录去重）。")
+            continue
         print(f"找到原图: {pic}")
 
         # 下载转存到本仓库 + jsDelivr CDN；失败则回退用原图链接
