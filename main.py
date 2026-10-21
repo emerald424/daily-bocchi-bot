@@ -11,6 +11,11 @@ WINDOW_FILE = "sent_windows.txt"  # 已发时段去重（防止延迟重跑重�
 
 SEND_HOURS = (10, 14, 22)  # 北京时间推送时段
 
+# 图床：用本仓库 images/ 目录 + jsDelivr CDN 加速（免费，无需第三方账号）
+IMAGE_DIR = "images"
+CDN_BASE = "https://fastly.jsdelivr.net/gh/emerald424/daily-bocchi-bot@main"
+KEEP_DAYS = 30  # images/ 只保留最近 30 天，避免仓库无限膨胀
+
 
 def beijing_now():
     return datetime.now(timezone.utc) + timedelta(hours=8)
@@ -48,6 +53,45 @@ def get_random_bocchi_image(sent):
         print(f"找图失败: {e}")
 
     return "https://media1.tenor.com/m/oxsD2MwZD8IAAAAd/bocchi-the-rock-hitori-gotou.gif", None
+
+
+def download_and_store(image_url):
+    """下载原图存到本仓库 images/ 目录，返回 jsDelivr CDN 链接；失败返回 None。"""
+    try:
+        dl = requests.get(image_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        dl.raise_for_status()
+        ext = os.path.splitext(image_url.split("?")[0])[1] or ".jpg"
+        os.makedirs(IMAGE_DIR, exist_ok=True)
+        # 文件名带 UTC 时间戳 + 随机数，避免同名覆盖和 CDN 缓存旧图
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"bocchi_{stamp}_{random.randint(1000, 9999)}{ext}"
+        with open(os.path.join(IMAGE_DIR, filename), "wb") as f:
+            f.write(dl.content)
+        return f"{CDN_BASE}/{IMAGE_DIR}/{filename}"
+    except Exception as e:
+        print(f"下载转存失败: {e}")
+        return None
+
+
+def cleanup_old_images(days=KEEP_DAYS):
+    """按文件名日期清理 images/ 下超过 days 天的旧图，避免仓库膨胀。"""
+    try:
+        cutoff = datetime.now(timezone.utc).date() - timedelta(days=days)
+        for name in os.listdir(IMAGE_DIR):
+            parts = name.split("_")
+            if len(parts) < 2:
+                continue
+            date_part = parts[1]
+            if len(date_part) == 8 and date_part.isdigit():
+                try:
+                    d = datetime.strptime(date_part, "%Y%m%d").date()
+                except ValueError:
+                    continue
+                if d < cutoff:
+                    os.remove(os.path.join(IMAGE_DIR, name))
+                    print(f"清理旧图: {name}")
+    except FileNotFoundError:
+        pass
 
 
 def send_to_pushplus(image_url, title="🎸 每日波奇酱"):
@@ -91,11 +135,21 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     sent = load_sent()
+    cleanup_old_images()
+
     for h in pending:
         window_key = f"{today}-{h}"
         print(f"正在补发 {h} 点的波奇酱...")
         pic, image_key = get_random_bocchi_image(sent)
-        print(f"找到图片: {pic}")
+        print(f"找到原图: {pic}")
+
+        # 下载转存到本仓库 + jsDelivr CDN；失败则回退用原图链接
+        cdn_url = download_and_store(pic)
+        if cdn_url:
+            pic = cdn_url
+            print(f"已转存 CDN: {pic}")
+        else:
+            print("下载转存失败，回退使用原图链接")
 
         ok = send_to_pushplus(pic, title=f"🎸 每日波奇酱（{h}点）")
 
