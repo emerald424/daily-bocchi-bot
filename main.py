@@ -2,6 +2,8 @@ import requests
 import os
 import random
 import time
+import json
+import sys
 from datetime import datetime, timezone, timedelta
 
 # 从 GitHub Secrets 获取配置
@@ -9,12 +11,13 @@ PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN")
 
 HISTORY_FILE = "sent.txt"        # 已发图片去重（发过不再发）
 WINDOW_FILE = "sent_windows.txt"  # 已发时段去重（防止延迟重跑重复推）
+PENDING_FILE = "pending.json"     # 待推送列表（prepare 阶段写，send 阶段读）
 
 SEND_HOURS = (10, 14, 22)  # 北京时间推送时段
 
-# 图床：用本仓库 images/ 目录 + jsDelivr CDN 加速（免费，无需第三方账号）
+# 图床：GitHub raw 直链。jsDelivr 对图片会 301 跳到 raw，多一跳还更慢，故直接用 raw。
 IMAGE_DIR = "images"
-CDN_BASE = "https://fastly.jsdelivr.net/gh/emerald424/daily-bocchi-bot@main"
+RAW_BASE = "https://raw.githubusercontent.com/emerald424/daily-bocchi-bot/main"
 KEEP_DAYS = 30  # images/ 只保留最近 30 天，避免仓库无限膨胀
 
 
@@ -65,18 +68,18 @@ def get_random_bocchi_image(sent):
 
 
 def download_and_store(image_url):
-    """下载原图存到本仓库 images/ 目录，返回 jsDelivr CDN 链接；失败返回 None。"""
+    """下载原图存到本仓库 images/ 目录，返回 GitHub raw 链接；失败返回 None。"""
     try:
         dl = requests.get(image_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
         dl.raise_for_status()
         ext = os.path.splitext(image_url.split("?")[0])[1] or ".jpg"
         os.makedirs(IMAGE_DIR, exist_ok=True)
-        # 文件名带 UTC 时间戳 + 随机数，避免同名覆盖和 CDN 缓存旧图
+        # 文件名带 UTC 时间戳 + 随机数，避免同名覆盖
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filename = f"bocchi_{stamp}_{random.randint(1000, 9999)}{ext}"
         with open(os.path.join(IMAGE_DIR, filename), "wb") as f:
             f.write(dl.content)
-        return f"{CDN_BASE}/{IMAGE_DIR}/{filename}"
+        return f"{RAW_BASE}/{IMAGE_DIR}/{filename}"
     except Exception as e:
         print(f"下载转存失败: {e}")
         return None
@@ -127,7 +130,8 @@ def send_to_pushplus(image_url, title="🎸 每日波奇酱"):
         return False
 
 
-if __name__ == "__main__":
+def prepare():
+    """阶段一：判断待补发时段，拉图下载到 images/，写 pending.json，不推微信。"""
     if not PUSHPLUS_TOKEN:
         print("错误：未检测到 PUSHPLUS_TOKEN 配置，请在 GitHub Secrets 中添加。")
         raise SystemExit(1)
@@ -136,32 +140,58 @@ if __name__ == "__main__":
     today = now.strftime("%Y-%m-%d")
     sent_windows = load_windows()
 
-    # 当天还没发过、且已经过了该时段的推送，按 10→14→22 顺序补发
     pending = [h for h in SEND_HOURS if now.hour >= h and f"{today}-{h}" not in sent_windows]
 
     if not pending:
         print(f"当前北京时间 {now.strftime('%H:%M')}，今天没有待补发的推送，跳过。")
+        with open(PENDING_FILE, "w") as f:
+            json.dump([], f)
         raise SystemExit(0)
 
     sent = load_sent()
     cleanup_old_images()
 
+    todo = []
     for h in pending:
-        window_key = f"{today}-{h}"
-        print(f"正在补发 {h} 点的波奇酱...")
+        print(f"正在准备 {h} 点的波奇酱...")
         pic, image_key = get_random_bocchi_image(sent)
         if pic is None:
             print(f"{h} 点 Safebooru 拉图失败，本次跳过，稍后由下次 run 重试（不记录去重）。")
             continue
         print(f"找到原图: {pic}")
-
-        # 下载转存到本仓库 + jsDelivr CDN；失败则回退用原图链接
         cdn_url = download_and_store(pic)
-        if cdn_url:
-            pic = cdn_url
-            print(f"已转存 CDN: {pic}")
-        else:
-            print("下载转存失败，回退使用原图链接")
+        if cdn_url is None:
+            print(f"{h} 点下载转存失败，跳过。")
+            continue
+        todo.append({"hour": h, "url": cdn_url, "image_key": image_key})
+        print(f"已转存 raw: {cdn_url}")
+
+    with open(PENDING_FILE, "w") as f:
+        json.dump(todo, f)
+    print(f"待推送 {len(todo)} 条，已写入 {PENDING_FILE}")
+
+
+def send():
+    """阶段二：读 pending.json，推微信，成功后记去重。此时图片已 push 到 GitHub。"""
+    try:
+        with open(PENDING_FILE, "r") as f:
+            todo = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        todo = []
+
+    if not todo:
+        print("没有待推送的内容，跳过。")
+        raise SystemExit(0)
+
+    now = beijing_now()
+    today = now.strftime("%Y-%m-%d")
+
+    for item in todo:
+        h = item["hour"]
+        window_key = f"{today}-{h}"
+        pic = item["url"]
+        image_key = item["image_key"]
+        print(f"正在推送 {h} 点的波奇酱: {pic}")
 
         ok = send_to_pushplus(pic, title=f"🎸 每日波奇酱（{h}点）")
 
@@ -170,10 +200,17 @@ if __name__ == "__main__":
                 f.write(window_key + "\n")
             print(f"已记录时段去重: {window_key}")
             if image_key:
-                sent.add(image_key)
                 with open(HISTORY_FILE, "a") as f:
                     f.write(image_key + "\n")
                 print(f"已记录图片去重: {image_key}")
         else:
             print(f"{h} 点推送失败，本次不记录去重，下次会重试。")
             raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    mode = sys.argv[1] if len(sys.argv) > 1 else "prepare"
+    if mode == "send":
+        send()
+    else:
+        prepare()
