@@ -18,18 +18,42 @@ jobs:
         with:
           python-version: '3.9'
       - run: pip install -r requirements.txt
-      - name: 运行波奇脚本
+
+      # ① 先下载图片、写待推列表，但不推微信
+      - name: 准备图片
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        run: python main.py
-      - name: 提交已发送记录与图片
+        run: python main.py prepare
+
+      # ② 把图片推到 GitHub，让 raw 链接先生效
+      - name: 推送图片到仓库
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add sent.txt sent_windows.txt images/ 2>/dev/null || true
+          git add images/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "无新图片，跳过提交"
+          else
+            git commit -m "上传图片"
+            git push
+          fi
+
+      # ③ 推微信（此时图片已经在 raw 上）
+      - name: 推送微信
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python main.py send
+
+      # ④ 提交去重记录（无论推送成败都提交，避免漏记）
+      - name: 提交去重记录
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add sent.txt sent_windows.txt 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "无变化，跳过提交"
           else
-            git commit -m "更新已发送记录与图片"
+            git commit -m "更新已发送记录"
             git push
           fi
