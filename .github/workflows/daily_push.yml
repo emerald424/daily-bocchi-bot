@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.12'
       - run: pip install -r requirements.txt
 
       # ① 先下载图片、写待推列表，但不推微信
